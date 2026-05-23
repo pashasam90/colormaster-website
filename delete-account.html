@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ColorMaster — удаление аккаунта</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; color: #1a1a2e; background: #f4f2fb; }
+    body { margin: 0; padding: 24px 16px 48px; }
+    .wrap { max-width: 420px; margin: 0 auto; }
+    h1 { font-size: 1.35rem; margin: 0 0 8px; }
+    p { line-height: 1.5; color: #444; font-size: 0.95rem; }
+    .card { background: #fff; border-radius: 16px; padding: 20px; margin-top: 20px; box-shadow: 0 8px 24px rgba(80, 60, 140, 0.08); }
+    label { display: block; font-size: 0.85rem; margin: 12px 0 4px; color: #555; }
+    input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; font-size: 1rem; }
+    button { margin-top: 14px; width: 100%; padding: 12px; border: 0; border-radius: 12px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: #9466f2; color: #fff; }
+  .btn-danger { background: #e5484d; color: #fff; }
+  .btn-secondary { background: #eee; color: #333; margin-top: 8px; }
+  .hidden { display: none; }
+  .msg { margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 0.9rem; }
+  .msg.error { background: #ffe8e8; color: #a00; }
+  .msg.ok { background: #e6f9ef; color: #0a6; }
+  .muted { font-size: 0.85rem; color: #666; margin-top: 16px; }
+  a { color: #9466f2; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>ColorMaster</h1>
+    <p>Удаление аккаунта и связанных данных (клиенты, консультации, склад, профиль).</p>
+    <p class="muted">Тот же аккаунт, что в мобильном приложении (Firebase). После удаления восстановить данные нельзя.</p>
+
+    <div id="login-card" class="card">
+      <h2 style="margin:0 0 8px;font-size:1.1rem">Вход</h2>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="email" />
+      <label for="password">Пароль</label>
+      <input id="password" type="password" autocomplete="current-password" />
+      <button type="button" class="btn-primary" id="btn-login">Войти</button>
+      <button type="button" class="btn-secondary" id="btn-google">Войти через Google</button>
+      <div id="login-msg" class="msg hidden"></div>
+    </div>
+
+    <div id="delete-card" class="card hidden">
+      <h2 style="margin:0 0 8px;font-size:1.1rem">Удалить аккаунт</h2>
+      <p>Вы вошли как <strong id="user-email"></strong>.</p>
+      <p>Будут удалены: профиль, клиенты, склад, аватар (если был). Подписку Google Play отмените отдельно в Play Store.</p>
+      <label for="confirm-password">Подтвердите пароль (если вход по email)</label>
+      <input id="confirm-password" type="password" autocomplete="current-password" placeholder="Нужен для подтверждения" />
+      <button type="button" class="btn-danger" id="btn-delete">Удалить аккаунт навсегда</button>
+      <button type="button" class="btn-secondary" id="btn-logout">Выйти</button>
+      <div id="delete-msg" class="msg hidden"></div>
+    </div>
+
+    <p class="muted">Альтернатива: в приложении <strong>Настройки → Удалить аккаунт</strong>.</p>
+    <p class="muted"><a href="privacy.html">Политика конфиденциальности</a></p>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+    import {
+      getAuth,
+      signInWithEmailAndPassword,
+      signInWithPopup,
+      GoogleAuthProvider,
+      reauthenticateWithCredential,
+      EmailAuthProvider,
+      onAuthStateChanged,
+      signOut,
+      deleteUser
+    } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+    import {
+      getFirestore,
+      collection,
+      query,
+      where,
+      getDocs,
+      doc,
+      deleteDoc,
+      writeBatch
+    } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+    import { getStorage, ref, deleteObject } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js';
+
+    // Публичный web-конфиг (тот же проект, что в mobile/app.config.ts)
+    const firebaseConfig = {
+      apiKey: 'AIzaSyBIBTj8GvJrVqa4qOScB4I4twMNrZnoA2E',
+      authDomain: 'colormasterapp-pasha.firebaseapp.com',
+      projectId: 'colormasterapp-pasha',
+      storageBucket: 'colormasterapp-pasha.firebasestorage.app',
+      messagingSenderId: '92470000399',
+      appId: '1:92470000399:web:d0c99b2018f3ae2c605c7a'
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const storage = getStorage(app);
+
+    const loginCard = document.getElementById('login-card');
+    const deleteCard = document.getElementById('delete-card');
+    const loginMsg = document.getElementById('login-msg');
+    const deleteMsg = document.getElementById('delete-msg');
+
+    function showMsg(el, text, ok) {
+      el.textContent = text;
+      el.className = 'msg ' + (ok ? 'ok' : 'error');
+      el.classList.remove('hidden');
+    }
+
+    async function deleteCollectionByUserId(name, userId) {
+      const snap = await getDocs(query(collection(db, name), where('userId', '==', userId)));
+      if (snap.empty) return 0;
+      let n = 0;
+      for (let i = 0; i < snap.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        snap.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+        n += Math.min(400, snap.docs.length - i);
+      }
+      return n;
+    }
+
+    async function deleteAccountData(user) {
+      const uid = user.uid;
+      for (const col of ['clients', 'inventory_brands', 'inventory_products', 'inventory_movements']) {
+        try {
+          await deleteCollectionByUserId(col, uid);
+        } catch (e) {
+          console.warn('cleanup', col, e);
+        }
+      }
+      try {
+        await deleteDoc(doc(db, 'users', uid));
+      } catch (e) {
+        console.warn('users doc', e);
+      }
+      try {
+        await deleteObject(ref(storage, `avatars/${uid}.jpg`));
+      } catch (e) {
+        /* нет аватара — норм */
+      }
+      await deleteUser(user);
+    }
+
+    onAuthStateChanged(auth, (user) => {
+      if (user) {
+        loginCard.classList.add('hidden');
+        deleteCard.classList.remove('hidden');
+        document.getElementById('user-email').textContent = user.email || user.uid;
+      } else {
+        deleteCard.classList.add('hidden');
+        loginCard.classList.remove('hidden');
+      }
+    });
+
+    document.getElementById('btn-login').onclick = async () => {
+      loginMsg.classList.add('hidden');
+      try {
+        await signInWithEmailAndPassword(auth, document.getElementById('email').value.trim(), document.getElementById('password').value);
+      } catch (e) {
+        showMsg(loginMsg, e.message || 'Ошибка входа', false);
+      }
+    };
+
+    document.getElementById('btn-google').onclick = async () => {
+      loginMsg.classList.add('hidden');
+      try {
+        await signInWithPopup(auth, new GoogleAuthProvider());
+      } catch (e) {
+        showMsg(loginMsg, (e.message || 'Google вход недоступен') + '. Добавьте pashasam90.github.io в Firebase → Authorized domains.', false);
+      }
+    };
+
+    document.getElementById('btn-logout').onclick = () => signOut(auth);
+
+    document.getElementById('btn-delete').onclick = async () => {
+      deleteMsg.classList.add('hidden');
+      const user = auth.currentUser;
+      if (!user) return;
+      if (!confirm('Удалить аккаунт и все данные без возможности восстановления?')) return;
+
+      try {
+        const pwd = document.getElementById('confirm-password').value;
+        if (user.providerData.some((p) => p.providerId === 'password') && pwd) {
+          await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, pwd));
+        } else if (user.providerData.some((p) => p.providerId === 'password') && !pwd) {
+          showMsg(deleteMsg, 'Введите пароль для подтверждения.', false);
+          return;
+        }
+        await deleteAccountData(user);
+        showMsg(deleteMsg, 'Аккаунт удалён.', true);
+      } catch (e) {
+        const code = e.code || '';
+        if (code === 'auth/requires-recent-login') {
+          showMsg(deleteMsg, 'Нужен повторный вход. Введите пароль и попробуйте снова, или удалите через приложение.', false);
+        } else {
+          showMsg(deleteMsg, e.message || 'Не удалось удалить аккаунт', false);
+        }
+      }
+    };
+  </script>
+</body>
+</html>
